@@ -24,6 +24,7 @@ import static android.provider.Settings.Global.ZEN_MODE_OFF;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.Person;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.media.AudioManager;
 import android.media.Ringtone;
@@ -36,6 +37,7 @@ import android.os.UserHandle;
 import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.provider.Settings;
 import android.provider.Settings;
 import android.telecom.Log;
 import android.telecom.TelecomManager;
@@ -88,6 +90,9 @@ public class Ringer {
 
     private static final int RAMPING_RINGER_VIBRATION_DURATION = 5000;
     private static final int RAMPING_RINGER_DURATION = 10000;
+
+    private int mRampingRingerDuration = -1;  // ramping ringer duration in millisecond
+    private float mRampingRingerStartVolume = 0f;
 
     static {
         // construct complete pulse pattern
@@ -304,17 +309,49 @@ public class Ringer {
                 if (mVolumeShaperConfig == null) {
                     float silencePoint = (float) (RAMPING_RINGER_VIBRATION_DURATION)
                             / (float) (RAMPING_RINGER_VIBRATION_DURATION + RAMPING_RINGER_DURATION);
-                    mVolumeShaperConfig = new VolumeShaper.Configuration.Builder()
-                            .setDuration(
-                                    RAMPING_RINGER_VIBRATION_DURATION + RAMPING_RINGER_DURATION)
-                            .setCurve(new float[]{0.f, silencePoint + EPSILON /*keep monotonicity*/,
-                                    1.f}, new float[]{0.f, 0.f, 1.f})
-                            .setInterpolatorType(
-                                    VolumeShaper.Configuration.INTERPOLATOR_TYPE_LINEAR)
-                            .build();
+                    mVolumeShaperConfig =
+                            new VolumeShaper.Configuration.Builder()
+                                    .setDuration(RAMPING_RINGER_VIBRATION_DURATION
+                                            + RAMPING_RINGER_DURATION)
+                                    .setCurve(
+                                            new float[]{0.f, silencePoint + EPSILON
+                                                    /*keep monotonicity*/, 1.f},
+                                            new float[]{0.f, 0.f, 1.f})
+                                    .setInterpolatorType(
+                                            VolumeShaper.Configuration.INTERPOLATOR_TYPE_LINEAR)
+                                    .build();
+                    if (mSystemSettingsUtil.isAudioCoupledVibrationForRampingRingerEnabled()) {
+                        useCustomVibrationEffect = true;
+                    }
+                } else {
+                    if (DEBUG_RINGER) {
+                        Log.i(this, "Create ringer with custom vibration effect");
+                    }
+                    final ContentResolver cr = mContext.getContentResolver();
+                    if (Settings.System.getIntForUser(cr,
+                            Settings.System.INCREASING_RING, 0, UserHandle.USER_CURRENT) != 0) {
+                        float startVolume = Settings.System.getFloatForUser(cr,
+                                Settings.System.INCREASING_RING_START_VOLUME, 0.1f, UserHandle.USER_CURRENT);
+                        int rampUpTime = Settings.System.getIntForUser(cr,
+                                Settings.System.INCREASING_RING_RAMP_UP_TIME, 20, UserHandle.USER_CURRENT);
+                        if (mVolumeShaperConfig == null
+                            || mRampingRingerDuration != rampUpTime
+                            || mRampingRingerStartVolume != startVolume) {
+                            mVolumeShaperConfig = new VolumeShaper.Configuration.Builder()
+                                .setDuration(rampUpTime * 1000)
+                                .setCurve(new float[] {0.f, 1.f}, new float[] {startVolume, 1.f})
+                                .setInterpolatorType(VolumeShaper
+                                        .Configuration.INTERPOLATOR_TYPE_LINEAR)
+                                .build();
+                            mRampingRingerDuration = rampUpTime;
+                            mRampingRingerStartVolume = startVolume;
+                        }
+                    } else {
+                        mVolumeShaperConfig = null;
+                    }
+                    // Ramping ringtone is not enabled.
+                    useCustomVibrationEffect = true;
                 }
-                hapticsFuture = mRingtonePlayer.play(mRingtoneFactory, foregroundCall,
-                        mVolumeShaperConfig, attributes.isRingerAudible(), isVibratorEnabled);
             } else {
                 // Ramping ringtone is not enabled.
                 hapticsFuture = mRingtonePlayer.play(mRingtoneFactory, foregroundCall, null,
